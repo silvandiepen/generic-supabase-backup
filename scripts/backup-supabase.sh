@@ -6,24 +6,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BACKUP_DIR="$PROJECT_ROOT/backups"
 CONFIG_FILE="$SCRIPT_DIR/.env"
-PROJECT_CONFIG="$PROJECT_ROOT/config.sh"
 
-# Load project configuration
-if [ -f "$PROJECT_CONFIG" ]; then
-    source "$PROJECT_CONFIG"
-else
-    echo "Warning: Project configuration file not found. Using defaults."
-    PROJECT_NAME="supabase-project"
-    BACKUP_PREFIX="${PROJECT_NAME}_backup"
+# Load configuration from env file if it exists (for local runs)
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
 fi
 
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo "Error: Configuration file $CONFIG_FILE not found!"
-    echo "Please create the .env file with your Supabase credentials."
+# Use environment variables with defaults
+PROJECT_NAME="${PROJECT_NAME:-${SUPABASE_PROJECT_NAME:-supabase-project}}"
+BACKUP_PREFIX="${BACKUP_PREFIX:-${PROJECT_NAME}_backup}"
+
+# Check required environment variables
+if [ -z "${SUPABASE_DB_URL:-}" ]; then
+    echo "Error: SUPABASE_DB_URL environment variable not set!"
+    echo "Please set your Supabase credentials."
     exit 1
 fi
-
-source "$CONFIG_FILE"
 
 # Check if we're in GitHub Actions and need to use pooler connection
 if [ "${GITHUB_ACTIONS:-false}" = "true" ] && [ ! -z "${SUPABASE_SESSION_POOLER_URL:-}" ]; then

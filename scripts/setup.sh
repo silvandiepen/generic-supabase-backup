@@ -4,17 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-PROJECT_CONFIG="$PROJECT_ROOT/config.sh"
 
-# Load project configuration
-if [ -f "$PROJECT_CONFIG" ]; then
-    source "$PROJECT_CONFIG"
-    echo "Project: $PROJECT_NAME"
-else
-    PROJECT_NAME="Supabase"
-fi
-
-echo "$PROJECT_NAME Backup Setup"
+echo "Supabase Backup Setup"
 echo "===================="
 echo
 
@@ -67,9 +58,8 @@ echo
 echo "Setup complete!"
 echo
 echo "Next steps:"
-echo "1. Edit $PROJECT_ROOT/config.sh to customize project settings"
-echo "2. Edit $SCRIPT_DIR/.env with your Supabase credentials"
-echo "3. Run: $SCRIPT_DIR/backup-supabase.sh"
+echo "1. Edit $SCRIPT_DIR/.env with your Supabase credentials"
+echo "2. Run: $SCRIPT_DIR/backup-supabase.sh"
 echo
 echo "To schedule automatic backups, add to crontab:"
 echo "0 2 * * * $SCRIPT_DIR/backup-supabase.sh"

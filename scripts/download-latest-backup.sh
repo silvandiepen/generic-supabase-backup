@@ -4,15 +4,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-PROJECT_CONFIG="$PROJECT_ROOT/config.sh"
+CONFIG_FILE="$SCRIPT_DIR/.env"
 
-# Load project configuration
-if [ -f "$PROJECT_CONFIG" ]; then
-    source "$PROJECT_CONFIG"
-else
-    echo "Warning: Project configuration file not found. Using defaults."
-    RELEASE_PREFIX="backup"
+# Load configuration from env file if it exists (for local runs)
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
 fi
+
+# Use environment variables with defaults
+RELEASE_PREFIX="${RELEASE_PREFIX:-backup}"
 
 # Function to show usage
 show_usage() {

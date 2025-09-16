@@ -6,22 +6,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BACKUP_DIR="$PROJECT_ROOT/backups"
 CONFIG_FILE="$SCRIPT_DIR/.env"
-PROJECT_CONFIG="$PROJECT_ROOT/config.sh"
 
-# Load project configuration
-if [ -f "$PROJECT_CONFIG" ]; then
-    source "$PROJECT_CONFIG"
-else
-    echo "Warning: Project configuration file not found. Using defaults."
-    BACKUP_PREFIX="*_backup"
-    DEFAULT_RETENTION_DAYS=30
-fi
-
+# Load configuration from env file if it exists (for local runs)
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 fi
 
-RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-$DEFAULT_RETENTION_DAYS}
+# Use environment variables with defaults
+PROJECT_NAME="${PROJECT_NAME:-${SUPABASE_PROJECT_NAME:-supabase-project}}"
+BACKUP_PREFIX="${BACKUP_PREFIX:-${PROJECT_NAME}_backup}"
+RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
 
 echo "Cleaning up backups older than $RETENTION_DAYS days..."
 echo "Backup directory: $BACKUP_DIR"

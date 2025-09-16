@@ -2,17 +2,13 @@ name: Daily Backup
 
 on:
   schedule:
-    # These will be replaced by the schedule from config.sh during setup
-    - cron: '0 2 * * *'   # BACKUP_SCHEDULE_1
-    - cron: '0 14 * * *'  # BACKUP_SCHEDULE_2
+    - cron: '0 2 * * *'   # 2 AM UTC
+    - cron: '0 14 * * *'  # 2 PM UTC
   workflow_dispatch:  # Allow manual trigger
 
 permissions:
   contents: write  # Required for creating releases
   issues: write    # Required for creating issues on failure
-
-env:
-  BACKUP_RETENTION_DAYS: 30
 
 jobs:
   backup:
@@ -22,25 +18,15 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Load project configuration
+    - name: Setup configuration
       id: config
       run: |
-        if [ -f "config.sh" ]; then
-          source config.sh
-          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_OUTPUT
-          echo "BACKUP_PREFIX=$BACKUP_PREFIX" >> $GITHUB_OUTPUT
-          echo "RELEASE_PREFIX=$RELEASE_PREFIX" >> $GITHUB_OUTPUT
-          echo "DEFAULT_RETENTION_DAYS=$DEFAULT_RETENTION_DAYS" >> $GITHUB_OUTPUT
-          echo "FAILURE_LABEL=$FAILURE_LABEL" >> $GITHUB_OUTPUT
-          echo "AUTOMATED_LABEL=$AUTOMATED_LABEL" >> $GITHUB_OUTPUT
-        else
-          echo "PROJECT_NAME=supabase" >> $GITHUB_OUTPUT
-          echo "BACKUP_PREFIX=supabase_backup" >> $GITHUB_OUTPUT
-          echo "RELEASE_PREFIX=backup" >> $GITHUB_OUTPUT
-          echo "DEFAULT_RETENTION_DAYS=30" >> $GITHUB_OUTPUT
-          echo "FAILURE_LABEL=backup-failure" >> $GITHUB_OUTPUT
-          echo "AUTOMATED_LABEL=automated" >> $GITHUB_OUTPUT
-        fi
+        # Use secrets or defaults
+        PROJECT_NAME="${{ secrets.PROJECT_NAME || 'supabase' }}"
+        echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_OUTPUT
+        echo "BACKUP_PREFIX=${PROJECT_NAME}_backup" >> $GITHUB_OUTPUT
+        echo "RELEASE_PREFIX=${{ secrets.RELEASE_PREFIX || 'backup' }}" >> $GITHUB_OUTPUT
+        echo "RETENTION_DAYS=${{ secrets.BACKUP_RETENTION_DAYS || '30' }}" >> $GITHUB_OUTPUT
 
     - name: Install PostgreSQL client
       run: |
@@ -62,20 +48,14 @@ jobs:
         SUPABASE_SESSION_POOLER_URL: ${{ secrets.SUPABASE_SESSION_POOLER_URL }}
         SUPABASE_PROJECT_URL: ${{ secrets.SUPABASE_PROJECT_URL }}
         SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        PROJECT_NAME: ${{ steps.config.outputs.PROJECT_NAME }}
+        BACKUP_PREFIX: ${{ steps.config.outputs.BACKUP_PREFIX }}
+        BACKUP_RETENTION_DAYS: ${{ steps.config.outputs.RETENTION_DAYS }}
       run: |
         # Make scripts executable
         chmod +x scripts/*.sh
         
-        # Create .env file from secrets
-        cat > scripts/.env << EOF
-        SUPABASE_DB_URL=$SUPABASE_DB_URL
-        SUPABASE_SESSION_POOLER_URL=$SUPABASE_SESSION_POOLER_URL
-        SUPABASE_PROJECT_URL=$SUPABASE_PROJECT_URL
-        SUPABASE_SERVICE_KEY=$SUPABASE_SERVICE_KEY
-        BACKUP_RETENTION_DAYS=${{ env.BACKUP_RETENTION_DAYS }}
-        EOF
-        
-        # Run backup
+        # Run backup (script will use env vars directly)
         ./scripts/backup-supabase.sh
 
     - name: Get backup filename
@@ -116,14 +96,14 @@ jobs:
       with:
         name: ${{ steps.config.outputs.PROJECT_NAME }}-backup-${{ steps.backup-info.outputs.date }}
         path: ${{ steps.backup-info.outputs.backup_file }}
-        retention-days: ${{ env.BACKUP_RETENTION_DAYS }}
+        retention-days: ${{ steps.config.outputs.RETENTION_DAYS }}
         compression-level: 9
 
     - name: Clean old releases
       uses: actions/github-script@v7
       with:
         script: |
-          const retention_days = parseInt(process.env.BACKUP_RETENTION_DAYS);
+          const retention_days = parseInt('${{ steps.config.outputs.RETENTION_DAYS }}');
           const release_prefix = '${{ steps.config.outputs.RELEASE_PREFIX }}';
           const cutoff_date = new Date();
           cutoff_date.setDate(cutoff_date.getDate() - retention_days);
@@ -162,15 +142,13 @@ jobs:
           }
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        BACKUP_RETENTION_DAYS: ${{ env.BACKUP_RETENTION_DAYS }}
+        BACKUP_RETENTION_DAYS: ${{ steps.config.outputs.RETENTION_DAYS }}
 
     - name: Send notification on failure
       if: failure()
       uses: actions/github-script@v7
       with:
         script: |
-          const failure_label = '${{ steps.config.outputs.FAILURE_LABEL }}';
-          const automated_label = '${{ steps.config.outputs.AUTOMATED_LABEL }}';
           const project_name = '${{ steps.config.outputs.PROJECT_NAME }}';
           
           await github.rest.issues.create({
@@ -178,7 +156,7 @@ jobs:
             repo: context.repo.repo,
             title: `${project_name} Backup Failed - ${new Date().toISOString().split('T')[0]}`,
             body: `The automated backup workflow failed. Please check the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.`,
-            labels: [failure_label, automated_label]
+            labels: ['backup-failure', 'automated']
           });
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
