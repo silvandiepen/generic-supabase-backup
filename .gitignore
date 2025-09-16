@@ -1,0 +1,42 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+scripts/.env
+
+# Backup files
+backups/
+*.tar.gz
+*.sql
+restored_storage_*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+*.temp
+
+# Logs
+*.log
+logs/
+
+# Security
+*.key
+*.pem
+*.crt
+*.p12
+
+# Project specific
+.backup-cache/
+.restore-temp/

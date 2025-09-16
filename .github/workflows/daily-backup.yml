@@ -1,0 +1,184 @@
+name: Daily Backup
+
+on:
+  schedule:
+    # These will be replaced by the schedule from config.sh during setup
+    - cron: '0 2 * * *'   # BACKUP_SCHEDULE_1
+    - cron: '0 14 * * *'  # BACKUP_SCHEDULE_2
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: write  # Required for creating releases
+  issues: write    # Required for creating issues on failure
+
+env:
+  BACKUP_RETENTION_DAYS: 30
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Load project configuration
+      id: config
+      run: |
+        if [ -f "config.sh" ]; then
+          source config.sh
+          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_OUTPUT
+          echo "BACKUP_PREFIX=$BACKUP_PREFIX" >> $GITHUB_OUTPUT
+          echo "RELEASE_PREFIX=$RELEASE_PREFIX" >> $GITHUB_OUTPUT
+          echo "DEFAULT_RETENTION_DAYS=$DEFAULT_RETENTION_DAYS" >> $GITHUB_OUTPUT
+          echo "FAILURE_LABEL=$FAILURE_LABEL" >> $GITHUB_OUTPUT
+          echo "AUTOMATED_LABEL=$AUTOMATED_LABEL" >> $GITHUB_OUTPUT
+        else
+          echo "PROJECT_NAME=supabase" >> $GITHUB_OUTPUT
+          echo "BACKUP_PREFIX=supabase_backup" >> $GITHUB_OUTPUT
+          echo "RELEASE_PREFIX=backup" >> $GITHUB_OUTPUT
+          echo "DEFAULT_RETENTION_DAYS=30" >> $GITHUB_OUTPUT
+          echo "FAILURE_LABEL=backup-failure" >> $GITHUB_OUTPUT
+          echo "AUTOMATED_LABEL=automated" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Install PostgreSQL client
+      run: |
+        sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        sudo apt-get update
+        sudo apt-get install -y postgresql-client-17 jq curl
+        # Ensure PostgreSQL 17 tools are used by updating PATH
+        echo "/usr/lib/postgresql/17/bin" >> $GITHUB_PATH
+
+    - name: Create backup directories
+      run: |
+        mkdir -p backups
+        mkdir -p temp
+
+    - name: Run backup script
+      env:
+        SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        SUPABASE_SESSION_POOLER_URL: ${{ secrets.SUPABASE_SESSION_POOLER_URL }}
+        SUPABASE_PROJECT_URL: ${{ secrets.SUPABASE_PROJECT_URL }}
+        SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      run: |
+        # Make scripts executable
+        chmod +x scripts/*.sh
+        
+        # Create .env file from secrets
+        cat > scripts/.env << EOF
+        SUPABASE_DB_URL=$SUPABASE_DB_URL
+        SUPABASE_SESSION_POOLER_URL=$SUPABASE_SESSION_POOLER_URL
+        SUPABASE_PROJECT_URL=$SUPABASE_PROJECT_URL
+        SUPABASE_SERVICE_KEY=$SUPABASE_SERVICE_KEY
+        BACKUP_RETENTION_DAYS=${{ env.BACKUP_RETENTION_DAYS }}
+        EOF
+        
+        # Run backup
+        ./scripts/backup-supabase.sh
+
+    - name: Get backup filename
+      id: backup-info
+      run: |
+        BACKUP_FILE=$(ls -t backups/*.tar.gz | head -1)
+        BACKUP_NAME=$(basename "$BACKUP_FILE")
+        BACKUP_SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
+        echo "backup_file=$BACKUP_FILE" >> $GITHUB_OUTPUT
+        echo "backup_name=$BACKUP_NAME" >> $GITHUB_OUTPUT
+        echo "backup_size=$BACKUP_SIZE" >> $GITHUB_OUTPUT
+        echo "date=$(date -u +"%Y-%m-%d")" >> $GITHUB_OUTPUT
+
+    - name: Upload to GitHub Releases
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.config.outputs.RELEASE_PREFIX }}-${{ steps.backup-info.outputs.date }}
+        name: Backup ${{ steps.backup-info.outputs.date }}
+        body: |
+          Automated daily backup of ${{ steps.config.outputs.PROJECT_NAME }} database and storage.
+          
+          **Backup Details:**
+          - File: `${{ steps.backup-info.outputs.backup_name }}`
+          - Size: ${{ steps.backup-info.outputs.backup_size }}
+          - Created: ${{ steps.backup-info.outputs.date }}
+          
+          To restore this backup:
+          1. Download the backup file
+          2. Run: `./scripts/restore-supabase.sh ${{ steps.backup-info.outputs.backup_name }}`
+        files: ${{ steps.backup-info.outputs.backup_file }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload backup artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.config.outputs.PROJECT_NAME }}-backup-${{ steps.backup-info.outputs.date }}
+        path: ${{ steps.backup-info.outputs.backup_file }}
+        retention-days: ${{ env.BACKUP_RETENTION_DAYS }}
+        compression-level: 9
+
+    - name: Clean old releases
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const retention_days = parseInt(process.env.BACKUP_RETENTION_DAYS);
+          const release_prefix = '${{ steps.config.outputs.RELEASE_PREFIX }}';
+          const cutoff_date = new Date();
+          cutoff_date.setDate(cutoff_date.getDate() - retention_days);
+          
+          const releases = await github.rest.repos.listReleases({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            per_page: 100
+          });
+          
+          for (const release of releases.data) {
+            if (release.tag_name.startsWith(release_prefix + '-')) {
+              const release_date = new Date(release.created_at);
+              if (release_date < cutoff_date) {
+                console.log(`Deleting old release: ${release.tag_name}`);
+                
+                // Delete the release
+                await github.rest.repos.deleteRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: release.id
+                });
+                
+                // Delete the tag
+                try {
+                  await github.rest.git.deleteRef({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: `tags/${release.tag_name}`
+                  });
+                } catch (e) {
+                  console.log(`Failed to delete tag ${release.tag_name}: ${e.message}`);
+                }
+              }
+            }
+          }
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        BACKUP_RETENTION_DAYS: ${{ env.BACKUP_RETENTION_DAYS }}
+
+    - name: Send notification on failure
+      if: failure()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const failure_label = '${{ steps.config.outputs.FAILURE_LABEL }}';
+          const automated_label = '${{ steps.config.outputs.AUTOMATED_LABEL }}';
+          const project_name = '${{ steps.config.outputs.PROJECT_NAME }}';
+          
+          await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `${project_name} Backup Failed - ${new Date().toISOString().split('T')[0]}`,
+            body: `The automated backup workflow failed. Please check the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.`,
+            labels: [failure_label, automated_label]
+          });
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

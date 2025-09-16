@@ -1,0 +1,142 @@
+name: Manual Backup
+
+on:
+  workflow_dispatch:
+    inputs:
+      retention_days:
+        description: 'Number of days to retain this backup'
+        required: false
+        default: '30'
+      include_storage:
+        description: 'Include storage buckets in backup'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Load project configuration
+      id: config
+      run: |
+        if [ -f "config.sh" ]; then
+          source config.sh
+          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_OUTPUT
+          echo "BACKUP_PREFIX=$BACKUP_PREFIX" >> $GITHUB_OUTPUT
+          echo "RELEASE_PREFIX=$RELEASE_PREFIX" >> $GITHUB_OUTPUT
+          echo "FAILURE_LABEL=$FAILURE_LABEL" >> $GITHUB_OUTPUT
+          echo "AUTOMATED_LABEL=$AUTOMATED_LABEL" >> $GITHUB_OUTPUT
+        else
+          echo "PROJECT_NAME=supabase" >> $GITHUB_OUTPUT
+          echo "BACKUP_PREFIX=supabase_backup" >> $GITHUB_OUTPUT
+          echo "RELEASE_PREFIX=backup" >> $GITHUB_OUTPUT
+          echo "FAILURE_LABEL=backup-failure" >> $GITHUB_OUTPUT
+          echo "AUTOMATED_LABEL=automated" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Install PostgreSQL client
+      run: |
+        sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        sudo apt-get update
+        sudo apt-get install -y postgresql-client-17 jq curl
+        echo "/usr/lib/postgresql/17/bin" >> $GITHUB_PATH
+
+    - name: Create backup directories
+      run: |
+        mkdir -p backups
+        mkdir -p temp
+
+    - name: Run backup script
+      env:
+        SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        SUPABASE_SESSION_POOLER_URL: ${{ secrets.SUPABASE_SESSION_POOLER_URL }}
+        SUPABASE_PROJECT_URL: ${{ inputs.include_storage == 'true' && secrets.SUPABASE_PROJECT_URL || '' }}
+        SUPABASE_SERVICE_KEY: ${{ inputs.include_storage == 'true' && secrets.SUPABASE_SERVICE_KEY || '' }}
+      run: |
+        chmod +x scripts/*.sh
+        
+        cat > scripts/.env << EOF
+        SUPABASE_DB_URL=$SUPABASE_DB_URL
+        SUPABASE_SESSION_POOLER_URL=$SUPABASE_SESSION_POOLER_URL
+        SUPABASE_PROJECT_URL=$SUPABASE_PROJECT_URL
+        SUPABASE_SERVICE_KEY=$SUPABASE_SERVICE_KEY
+        BACKUP_RETENTION_DAYS=${{ github.event.inputs.retention_days }}
+        EOF
+        
+        ./scripts/backup-supabase.sh
+
+    - name: Get backup filename
+      id: backup-info
+      run: |
+        BACKUP_FILE=$(ls -t backups/*.tar.gz | head -1)
+        BACKUP_NAME=$(basename "$BACKUP_FILE")
+        BACKUP_SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
+        echo "backup_file=$BACKUP_FILE" >> $GITHUB_OUTPUT
+        echo "backup_name=$BACKUP_NAME" >> $GITHUB_OUTPUT
+        echo "backup_size=$BACKUP_SIZE" >> $GITHUB_OUTPUT
+        echo "date=$(date -u +"%Y-%m-%d")" >> $GITHUB_OUTPUT
+        echo "time=$(date -u +"%H-%M-%S")" >> $GITHUB_OUTPUT
+
+    - name: Upload to GitHub Releases
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.config.outputs.RELEASE_PREFIX }}-manual-${{ steps.backup-info.outputs.date }}-${{ steps.backup-info.outputs.time }}
+        name: Manual Backup ${{ steps.backup-info.outputs.date }} ${{ steps.backup-info.outputs.time }}
+        body: |
+          Manual backup of ${{ steps.config.outputs.PROJECT_NAME }} database${{ inputs.include_storage == 'true' && ' and storage' || '' }}.
+          
+          **Backup Details:**
+          - File: `${{ steps.backup-info.outputs.backup_name }}`
+          - Size: ${{ steps.backup-info.outputs.backup_size }}
+          - Created: ${{ steps.backup-info.outputs.date }} ${{ steps.backup-info.outputs.time }} UTC
+          - Retention: ${{ github.event.inputs.retention_days }} days
+          - Storage included: ${{ inputs.include_storage }}
+          - Triggered by: @${{ github.actor }}
+          
+          To restore this backup:
+          1. Download the backup file
+          2. Run: `./scripts/restore-supabase.sh ${{ steps.backup-info.outputs.backup_name }}`
+        files: ${{ steps.backup-info.outputs.backup_file }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload backup artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.config.outputs.PROJECT_NAME }}-manual-backup-${{ steps.backup-info.outputs.date }}-${{ steps.backup-info.outputs.time }}
+        path: ${{ steps.backup-info.outputs.backup_file }}
+        retention-days: ${{ github.event.inputs.retention_days }}
+        compression-level: 9
+
+    - name: Send notification on failure
+      if: failure()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const failure_label = '${{ steps.config.outputs.FAILURE_LABEL }}';
+          const project_name = '${{ steps.config.outputs.PROJECT_NAME }}';
+          
+          await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `Manual ${project_name} Backup Failed - ${new Date().toISOString()}`,
+            body: `The manual backup workflow triggered by @${context.actor} failed. Please check the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.`,
+            labels: [failure_label, 'manual-backup']
+          });
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
